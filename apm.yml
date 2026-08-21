@@ -1,0 +1,11 @@
+name: agent-skills
+version: 0.1.0
+description: Personal agent skills, distributed via APM for reuse across projects
+author: murooka
+license: MIT
+type: skill
+includes: auto
+
+dependencies:
+  apm: []
+  mcp: []
