@@ -48,4 +48,4 @@ description: コードの実装・変更における設計判断（情報の所�
 ## 対象外・役割分担
 
 - 型エラー・lint 違反・architecture test で決定的に検査できる違反は対象外。deterministic check に任せる。
-- コメントの表記規範（書き方・密度・形式）は code-comment-style スキル、テストの記述規約（AAA・assert メッセージ）は python-test-style スキルが担当する。本スキルが扱うのは「その情報をどの抽象化が所有するか」という判断層のみ。
+- コメントの表記規範（書き方・密度・形式）は code-comment-style スキル、テストの記述規約（AAA・assert メッセージ・契約からのケース導出）は test-writing スキルが担当する。本スキルが扱うのは「その情報をどの抽象化が所有するか」という判断層のみ。
