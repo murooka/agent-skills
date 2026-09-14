@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ask-via-form</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #ffffff; --fg: #1f2328; --muted: #656d76; --line: #d0d7de;
+  --accent: #0969da; --accent-bg: #ddf4ff; --ok: #1a7f37; --ok-bg: #dafbe1;
+  --warn: #9a6700; --warn-bg: #fff8c5; --danger: #cf222e; --danger-bg: #ffebe9; --code-bg: #eff1f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #8d96a0; --line: #30363d;
+    --accent: #4493f8; --accent-bg: #121d2f; --ok: #3fb950; --ok-bg: #12261e;
+    --warn: #d29922; --warn-bg: #272115; --danger: #f85149; --danger-bg: #25171c; --code-bg: #262c36;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif; }
+main { max-width: 880px; margin: 0 auto; padding: 20px 16px 160px; }
+button, input, textarea { font: inherit; color: inherit; }
+.top { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.top h1 { font-size: 16px; margin: 0; }
+.top .meta { color: var(--muted); font-size: 13px; }
+.top .save { margin-left: auto; color: var(--muted); font-size: 12px; }
+.banner { padding: 10px 14px; border-radius: 8px; margin: 12px 0; font-weight: 600; }
+.banner.danger { background: var(--danger-bg); color: var(--danger); }
+.banner.ended { background: var(--code-bg); color: var(--muted); }
+.form { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin: 16px 0; }
+.form.open { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.form > summary { cursor: pointer; padding: 12px 16px; list-style: none; display: flex; gap: 10px; align-items: center; }
+.form > summary::-webkit-details-marker { display: none; }
+.form > summary::before { content: "▸"; color: var(--muted); }
+.form[open] > summary::before { content: "▾"; }
+.form-body { padding: 4px 20px 20px; }
+.form.open .form-body { padding-top: 16px; }
+.fid { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.form h2 { font-size: 18px; margin: 0; }
+.notice { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 8px; margin: 8px 0 12px; }
+.intro { border-left: 3px solid var(--line); padding-left: 12px; margin: 8px 0 16px; }
+.bulk { margin: 12px 0; }
+.q { border-top: 1px solid var(--line); padding: 16px 0; }
+.q.has-error { background: var(--danger-bg); margin: 0 -20px; padding: 16px 20px; }
+.q-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.qnum { font-weight: 700; color: var(--accent); }
+.q h3 { font-size: 16px; margin: 0; flex: 1 1 auto; }
+.badge { font-size: 12px; padding: 1px 10px; border-radius: 999px; background: var(--code-bg); color: var(--muted); white-space: nowrap; }
+.badge.answered { background: var(--ok-bg); color: var(--ok); }
+.badge.hold { background: var(--warn-bg); color: var(--warn); }
+.badge.return { background: var(--danger-bg); color: var(--danger); }
+.badge.changed { background: var(--warn-bg); color: var(--warn); }
+.rec { background: var(--accent-bg); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
+.rec-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.rec-tag { font-weight: 700; color: var(--accent); }
+.rec-value { font-weight: 600; white-space: pre-wrap; }
+.rec .btn { margin-top: 6px; }
+.modes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 10px 0 8px; }
+.mode { border: 0; background: transparent; padding: 4px 14px; cursor: pointer; border-right: 1px solid var(--line); }
+.mode:last-child { border-right: 0; }
+.mode.active { background: var(--accent); color: #fff; }
+.opts { display: grid; gap: 6px; margin: 6px 0 10px; }
+.opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.opt:hover { border-color: var(--accent); }
+.opt.checked { border-color: var(--accent); background: var(--accent-bg); }
+.opt input { margin-top: 6px; }
+.opt-label { font-weight: 600; }
+.opt-desc { color: var(--muted); font-size: 14px; }
+textarea { width: 100%; min-height: 72px; resize: vertical; border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; background: var(--card); }
+textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.field-label { font-size: 13px; color: var(--muted); margin: 4px 0; }
+.err { color: var(--danger); font-weight: 600; margin-top: 6px; }
+.memo { border-top: 1px solid var(--line); padding-top: 16px; }
+.memo h3 { font-size: 15px; margin: 0 0 6px; }
+.actions { display: flex; gap: 12px; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: 16px; }
+.actions .hint { color: var(--muted); font-size: 13px; }
+.btn { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 5px 14px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; padding: 8px 24px; }
+.btn:disabled { opacity: .5; cursor: default; }
+.waiting { text-align: center; color: var(--muted); padding: 28px 16px; border: 1px dashed var(--line); border-radius: 12px; margin: 16px 0; }
+.waiting .actions { justify-content: center; }
+body.ended .modes, body.ended .btn, body.ended .bulk { display: none; }
+.md p { margin: 6px 0; }
+.md ul, .md ol { margin: 6px 0; padding-left: 1.5em; }
+.md code { background: var(--code-bg); border-radius: 4px; padding: 0 4px; font-size: 90%; }
+.md pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md .table-wrap { overflow-x: auto; }
+.md table { border-collapse: collapse; margin: 8px 0; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; vertical-align: top; }
+.md a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>ask-via-form</h1>
+    <span class="meta" id="meta"></span>
+    <span class="save" id="save"></span>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <div id="forms"></div>
+  <div id="footer"></div>
+</main>
+<script>
+"use strict";
+
+const POLL_MS = 2000;
+const SAVE_MS = 800;
+const MODES = [["answer", "回答する"], ["hold", "保留"], ["return", "差し戻し"]];
+const STATE_LABELS = { answered: "回答", hold: "保留", return: "差し戻し", unanswered: "未回答" };
+
+let view = null;          // サーバから受け取った最新の状態
+let local = {};           // フォーム id -> { answers: {設問 id: 回答}, memo }。画面の入力はここが正
+let renderedRev = -1;
+let connected = true;
+let submitting = false;
+let errors = {};          // "フォーム id/設問 id" -> メッセージ
+let openedDetails = new Set();
+let seenForms = new Set();
+const saveTimers = {};
+
+// ------------------------------------------------------------ Markdown(限られた記法だけ)
+
+function esc(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function inline(s) {
+  return s.split(/(`[^`]+`)/).map((part) => {
+    if (part.length > 1 && part.startsWith("`") && part.endsWith("`")) return "<code>" + esc(part.slice(1, -1)) + "</code>";
+    return esc(part)
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\*)/g, "$1<em>$2</em>");
+  }).join("");
+}
+
+const FENCE = /^\s*```/;
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+function isTableStart(lines, i) {
+  return lines[i].includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]);
+}
+
+function startsBlock(lines, i) {
+  return FENCE.test(lines[i]) || LIST_ITEM.test(lines[i]) || isTableStart(lines, i);
+}
+
+function cells(line) {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  return s.split(/(?<!\\)\|/).map((c) => inline(c.trim().replace(/\\\|/g, "|")));
+}
+
+function buildList(items) {
+  let html = "";
+  const stack = [];
+  for (const it of items) {
+    const tag = it.ordered ? "ol" : "ul";
+    if (!stack.length || it.indent > stack[stack.length - 1].indent) {
+      html += "<" + tag + ">";
+      stack.push({ indent: it.indent, tag });
+    } else {
+      while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += "</li></" + stack.pop().tag + ">";
+      html += "</li>";
+    }
+    html += "<li>" + it.text.split("\n").map(inline).join("<br>");
+  }
+  while (stack.length) html += "</li></" + stack.pop().tag + ">";
+  return html;
+}
+
+function md(src) {
+  const lines = (src || "").replace(/\r\n?/g, "\n").split("\n");
+  let html = "";
+  let i = 0;
+  while (i < lines.length) {
+    if (FENCE.test(lines[i])) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !FENCE.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      html += "<pre><code>" + esc(buf.join("\n")) + "</code></pre>";
+    } else if (!lines[i].trim()) {
+      i++;
+    } else if (isTableStart(lines, i)) {
+      const head = cells(lines[i]);
+      i += 2;
+      let rows = "";
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
+        rows += "<tr>" + cells(lines[i++]).map((c) => "<td>" + c + "</td>").join("") + "</tr>";
+      }
+      html += '<div class="table-wrap"><table><thead><tr>' + head.map((c) => "<th>" + c + "</th>").join("")
+        + "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+    } else if (LIST_ITEM.test(lines[i])) {
+      const items = [];
+      while (i < lines.length) {
+        const m = lines[i].match(LIST_ITEM);
+        if (m) {
+          items.push({ indent: m[1].replace(/\t/g, "    ").length, ordered: /\d/.test(m[2]), text: m[3] });
+        } else if (/^\s+\S/.test(lines[i]) && items.length) {
+          items[items.length - 1].text += "\n" + lines[i].trim();
+        } else {
+          break;
+        }
+        i++;
+      }
+      html += buildList(items);
+    } else {
+      const buf = [];
+      while (i < lines.length && lines[i].trim() && !startsBlock(lines, i)) buf.push(lines[i++]);
+      html += "<p>" + buf.map(inline).join("<br>") + "</p>";
+    }
+  }
+  return html;
+}
+
+// ------------------------------------------------------------ 回答の判定(サーバの ask.py と同じ規則)
+
+function blank() {
+  return { mode: "answer", selected: [], text: "", note: "" };
+}
+
+function normalizeAnswer(q, a) {
+  const labels = q.options.map((o) => o.label);
+  const out = Object.assign(blank(), a || {});
+  if (!MODES.some(([m]) => m === out.mode)) out.mode = "answer";
+  out.selected = labels.filter((l) => (out.selected || []).includes(l));
+  if (!q.multiple) out.selected = out.selected.slice(0, 1);
+  if (q.text === "none") out.text = "";
+  return out;
+}
+
+function stateOf(q, a) {
+  if (a.mode === "hold" || a.mode === "return") return a.mode;
+  const text = a.text.trim();
+  if (!a.selected.length && !text) return "unanswered";
+  if (q.text === "required" && !text) return "unanswered";
+  return "answered";
+}
+
+function followsRecommendation(q, a) {
+  if (stateOf(q, a) !== "answered" || !q.recommended.length) return false;
+  if (q.options.length) {
+    return a.selected.length === q.recommended.length && q.recommended.every((r) => a.selected.includes(r)) && !a.text.trim();
+  }
+  return a.text.trim() === q.recommended[0].trim();
+}
+
+function effective(q, a) {
+  const st = stateOf(q, a);
+  if (st === "answered") return JSON.stringify([st, a.selected, a.text.trim()]);
+  if (st === "hold" || st === "return") return JSON.stringify([st, a.note.trim()]);
+  return JSON.stringify([st]);
+}
+
+function answerOf(form, q) {
+  const entry = local[form.id];
+  if (!entry.answers[q.id]) entry.answers[q.id] = blank();
+  return entry.answers[q.id];
+}
+
+function isChanged(form) {
+  if (!form.submitted || !form.answers) return false;
+  if ((local[form.id].memo || "").trim() !== (form.memo || "").trim()) return true;
+  return form.questions.some((q) => effective(q, answerOf(form, q)) !== effective(q, normalizeAnswer(q, form.answers[q.id])));
+}
+
+function syncLocal(form) {
+  if (!local[form.id]) {
+    const src = form.draft || (form.submitted ? { answers: form.answers, memo: form.memo } : null) || {};
+    local[form.id] = { answers: JSON.parse(JSON.stringify(src.answers || {})), memo: src.memo || "" };
+  }
+  const entry = local[form.id];
+  for (const q of form.questions) entry.answers[q.id] = normalizeAnswer(q, entry.answers[q.id]);
+}
+
+// ------------------------------------------------------------ 描画
+
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (k === "value") node.value = v;
+    else if (k === "checked") node.checked = v;
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of [].concat(children === undefined ? [] : children)) {
+    if (c === null || c === undefined || c === false) continue;
+    node.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return node;
+}
+
+function mdEl(src, cls) {
+  const node = el("div", { class: "md " + (cls || "") });
+  node.innerHTML = md(src);
+  return node;
+}
+
+function editable() {
+  return view && view.status === "active";
+}
+
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.max(72, ta.scrollHeight + 2) + "px";
+}
+
+function textarea(key, value, placeholder, onInput) {
+  const ta = el("textarea", { "data-key": key, placeholder, value, disabled: !editable() });
+  ta.addEventListener("input", () => { onInput(ta.value); autosize(ta); });
+  requestAnimationFrame(() => autosize(ta));
+  return ta;
+}
+
+function badgeFor(q, a) {
+  const st = stateOf(q, a);
+  const label = followsRecommendation(q, a) ? "回答(推奨どおり)" : STATE_LABELS[st];
+  return el("span", { class: "badge " + st }, label);
+}
+
+function renderQuestion(form, q, n) {
+  const key = form.id + "/" + q.id;
+  const a = answerOf(form, q);
+  const box = el("div", { class: "q" + (errors[key] ? " has-error" : ""), id: "q-" + key });
+  const rerender = () => {
+    const fresh = renderQuestion(form, q, n);
+    box.replaceWith(fresh);
+    return fresh;
+  };
+  const touched = () => {
+    delete errors[key];
+    box.querySelector(".badge").replaceWith(badgeFor(q, a));
+    changed(form);
+  };
+
+  box.append(el("div", { class: "q-head" }, [el("span", { class: "qnum" }, "Q" + n), el("h3", {}, q.title), badgeFor(q, a)]));
+  if (q.body) box.append(mdEl(q.body, "body"));
+
+  if (q.recommended.length) {
+    const rec = el("div", { class: "rec" }, [
+      el("div", { class: "rec-head" }, [el("span", { class: "rec-tag" }, "推奨"), el("span", { class: "rec-value" }, q.recommended.join("、"))]),
+      q.reason ? mdEl(q.reason, "reason") : null,
+      editable() ? el("button", { type: "button", class: "btn", onclick: () => { applyRecommendation(q, a); rerender(); changed(form); } }, "推奨で回答") : null,
+    ]);
+    box.append(rec);
+  }
+
+  if (editable()) {
+    box.append(el("div", { class: "modes" }, MODES.map(([mode, label]) =>
+      el("button", {
+        type: "button", class: "mode" + (a.mode === mode ? " active" : ""), "aria-pressed": String(a.mode === mode),
+        onclick: () => { if (a.mode !== mode) { a.mode = mode; delete errors[key]; rerender(); changed(form); } },
+      }, label))));
+  }
+
+  if (a.mode === "answer") {
+    if (q.options.length) {
+      const opts = el("div", { class: "opts" });
+      q.options.forEach((o) => {
+        const input = el("input", { type: q.multiple ? "checkbox" : "radio", name: "opt-" + key, checked: a.selected.includes(o.label), disabled: !editable() });
+        const row = el("label", { class: "opt" + (a.selected.includes(o.label) ? " checked" : "") }, [
+          input,
+          el("span", {}, [el("div", { class: "opt-label" }, o.label), o.description ? mdEl(o.description, "opt-desc") : null]),
+        ]);
+        input.addEventListener("click", () => {
+          if (q.multiple) {
+            a.selected = q.options.map((x) => x.label).filter((l) => (l === o.label ? input.checked : a.selected.includes(l)));
+          } else if (a.selected[0] === o.label) {
+            a.selected = [];            // 選択済みのラジオをもう一度押すと外せる
+            input.checked = false;
+          } else {
+            a.selected = [o.label];
+          }
+          opts.querySelectorAll(".opt").forEach((r) => r.classList.toggle("checked", r.querySelector("input").checked));
+          touched();
+        });
+        opts.append(row);
+      });
+      box.append(opts);
+    }
+    if (q.text !== "none") {
+      const placeholder = !q.options.length
+        ? (q.text === "required" ? "回答を書いてください" : "回答")
+        : "選択肢で表しきれないこと。どれでもなければ、選ばずにここだけ書いてもよい";
+      if (q.options.length) box.append(el("div", { class: "field-label" }, q.text === "required" ? "補足(必須)" : "補足(任意)"));
+      box.append(textarea(key + "/text", a.text, placeholder, (v) => { a.text = v; touched(); }));
+    }
+  } else if (a.mode === "hold") {
+    box.append(el("div", { class: "field-label" }, "保留の理由(任意)"));
+    box.append(textarea(key + "/note", a.note, "例: Q2 が決まってから答えたい", (v) => { a.note = v; touched(); }));
+  } else {
+    box.append(el("div", { class: "field-label" }, "設問への疑問や異議(必須)"));
+    box.append(textarea(key + "/note", a.note, "例: そもそも〜という前提が違う / この設問の意味がわからない", (v) => { a.note = v; touched(); }));
+  }
+  if (errors[key]) box.append(el("div", { class: "err" }, errors[key]));
+  return box;
+}
+
+function applyRecommendation(q, a) {
+  a.mode = "answer";
+  if (q.options.length) a.selected = q.multiple ? q.recommended.slice() : q.recommended.slice(0, 1);
+  else a.text = q.recommended[0];
+}
+
+function renderMemo(form) {
+  const entry = local[form.id];
+  return el("div", { class: "memo" }, [
+    el("h3", {}, "全体メモ"),
+    textarea(form.id + "/memo", entry.memo, "どの設問にも紐づかない考えがあれば(任意)", (v) => { entry.memo = v; changed(form); }),
+  ]);
+}
+
+function renderOpenForm(form) {
+  const body = el("div", { class: "form-body" });
+  body.append(el("div", { class: "q-head" }, [el("span", { class: "fid" }, "フォーム " + form.id), el("h2", {}, form.title || "")]));
+  if (form.notice) body.append(el("div", { class: "notice" }, form.notice));
+  if (form.intro) body.append(mdEl(form.intro, "intro"));
+  if (editable() && form.questions.some((q) => q.recommended.length)) {
+    body.append(el("div", { class: "bulk" }, el("button", {
+      type: "button", class: "btn",
+      onclick: () => {
+        for (const q of form.questions) {
+          const a = answerOf(form, q);
+          if (q.recommended.length && a.mode === "answer" && stateOf(q, a) === "unanswered") applyRecommendation(q, a);
+        }
+        renderAll();
+        changed(form);
+      },
+    }, "未回答をすべて推奨で埋める")));
+  }
+  form.questions.forEach((q, i) => body.append(renderQuestion(form, q, i + 1)));
+  body.append(renderMemo(form));
+  if (editable()) {
+    body.append(el("div", { class: "actions" }, [
+      el("span", { class: "hint", id: "submit-hint" }),
+      el("button", { type: "button", class: "btn primary", onclick: () => submit(true) }, "送信"),
+    ]));
+  }
+  return el("section", { class: "form open", id: "form-" + form.id }, body);
+}
+
+function renderPastForm(form) {
+  const details = el("details", { class: "form", id: "form-" + form.id, open: openedDetails.has(form.id) });
+  details.addEventListener("toggle", () => {
+    if (details.open) openedDetails.add(form.id); else openedDetails.delete(form.id);
+  });
+  details.append(el("summary", {}, [
+    el("span", { class: "fid" }, "フォーム " + form.id),
+    el("h2", {}, form.title || ""),
+    el("span", { class: "badge" }, "送信 #" + form.seq),
+    el("span", { class: "badge changed", id: "changed-" + form.id, hidden: !isChanged(form) }, "変更あり(次の送信で AI に届きます)"),
+  ]));
+  const body = el("div", { class: "form-body" });
+  if (form.intro) body.append(mdEl(form.intro, "intro"));
+  form.questions.forEach((q, i) => body.append(renderQuestion(form, q, i + 1)));
+  body.append(renderMemo(form));
+  details.append(body);
+  return details;
+}
+
+function captureFocus() {
+  const active = document.activeElement;
+  if (!active || !active.dataset || !active.dataset.key) return null;
+  return { key: active.dataset.key, start: active.selectionStart, end: active.selectionEnd };
+}
+
+function restoreFocus(saved) {
+  if (!saved) return;
+  const target = document.querySelector('[data-key="' + CSS.escape(saved.key) + '"]');
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  if (typeof saved.start === "number") target.setSelectionRange(saved.start, saved.end);
+}
+
+function renderAll() {
+  const focus = captureFocus();
+  const scrollY = window.scrollY;
+  const container = document.getElementById("forms");
+  container.textContent = "";
+  document.body.classList.toggle("ended", !editable());
+  let newcomer = null;
+  for (const form of view.forms) {
+    container.append(form.submitted ? renderPastForm(form) : renderOpenForm(form));
+    if (!seenForms.has(form.id)) {
+      if (renderedRev !== -1 && !form.submitted) newcomer = form.id;
+      seenForms.add(form.id);
+    }
+  }
+  renderedRev = view.rev;
+  renderChrome();
+  window.scrollTo(0, scrollY);
+  restoreFocus(focus);
+  if (newcomer && !focus) document.getElementById("form-" + newcomer).scrollIntoView({ behavior: "smooth", block: "start" });
+  if (newcomer && document.hidden) document.title = "● 新しい設問 - ask-via-form";
+}
+
+function renderChrome() {
+  document.getElementById("meta").textContent = view ? "セッション " + view.session : "";
+  const banner = document.getElementById("banner");
+  if (!connected) {
+    banner.className = "banner danger";
+    banner.textContent = "サーバに接続できません。再接続を試みています…";
+    banner.hidden = false;
+  } else if (view && view.status !== "active") {
+    banner.className = "banner ended";
+    banner.textContent = "セッション終了" + (view.stop_reason ? "(" + view.stop_reason + ")" : "");
+    banner.hidden = false;
+  } else {
+    banner.hidden = true;
+  }
+  if (!view) return;
+
+  const changedForms = view.forms.filter(isChanged);
+  for (const form of view.forms) {
+    const badge = document.getElementById("changed-" + form.id);
+    if (badge) badge.hidden = !isChanged(form);
+  }
+  const current = view.forms.find((f) => !f.submitted);
+  const hint = document.getElementById("submit-hint");
+  if (current && hint) {
+    const unanswered = current.questions.filter((q) => stateOf(q, answerOf(current, q)) === "unanswered").length;
+    const parts = [];
+    if (unanswered) parts.push("未回答 " + unanswered + " 問(このまま送信できます)");
+    if (changedForms.length) parts.push("前のフォームでの変更も一緒に送られます");
+    hint.textContent = parts.join(" / ");
+  }
+
+  const footer = document.getElementById("footer");
+  footer.textContent = "";
+  if (current || !editable()) return;
+  const last = view.last_submission;
+  const message = !last ? "AI が設問を準備しています…"
+    : last.delivered ? "送信 #" + last.seq + " を AI が受け取りました。次の設問を準備しています…"
+    : "送信 #" + last.seq + " を送りました。AI が受け取るのを待っています…";
+  const box = el("div", { class: "waiting" }, el("div", {}, message));
+  if (changedForms.length) {
+    box.append(el("div", { class: "actions" }, [
+      el("span", { class: "hint" }, "前のフォームを変更しています"),
+      el("button", { type: "button", class: "btn primary", onclick: () => submit(false) }, "変更だけ送信"),
+    ]));
+  }
+  footer.append(box);
+}
+
+// ------------------------------------------------------------ 通信
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, cache: "no-store",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* 本文なし */ }
+  if (!res.ok) {
+    const err = new Error((data && data.error) || "HTTP " + res.status);
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+function setSaveStatus(text) {
+  document.getElementById("save").textContent = text;
+}
+
+function changed(form) {
+  clearTimeout(saveTimers[form.id]);
+  saveTimers[form.id] = setTimeout(() => saveDraft(form.id), SAVE_MS);
+  setSaveStatus("編集中…");
+  renderChrome();
+}
+
+async function saveDraft(formId) {
+  delete saveTimers[formId];
+  try {
+    await api("PUT", "api/draft", { form_id: formId, answers: local[formId].answers, memo: local[formId].memo });
+    setSaveStatus("入力を保存しました");
+  } catch (e) {
+    setSaveStatus("入力を保存できませんでした");
+  }
+}
+
+async function refresh() {
+  const next = await api("GET", "api/state");
+  connected = true;
+  view = next;
+  view.forms.forEach(syncLocal);
+  if (view.rev !== renderedRev) renderAll(); else renderChrome();
+}
+
+async function poll() {
+  try {
+    await refresh();
+  } catch (e) {
+    connected = false;
+    renderChrome();
+  } finally {
+    setTimeout(poll, POLL_MS);
+  }
+}
+
+async function submit(includeCurrent) {
+  if (submitting) return;
+  const current = includeCurrent ? view.forms.find((f) => !f.submitted) : null;
+  const edits = {};
+  const found = {};
+  const requireNotes = (form) => form.questions.forEach((q) => {
+    const a = answerOf(form, q);
+    if (a.mode === "return" && !a.note.trim()) found[form.id + "/" + q.id] = "差し戻しの内容を書いてください";
+  });
+  if (current) requireNotes(current);
+  for (const form of view.forms) {
+    if (form.submitted && isChanged(form)) {
+      requireNotes(form);
+      edits[form.id] = { answers: local[form.id].answers, memo: local[form.id].memo };
+      openedDetails.add(form.id);
+    }
+  }
+  errors = found;
+  if (Object.keys(found).length) {
+    renderAll();
+    document.getElementById("q-" + Object.keys(found)[0]).scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+
+  submitting = true;
+  for (const id of Object.keys(saveTimers)) { clearTimeout(saveTimers[id]); delete saveTimers[id]; }
+  try {
+    await api("POST", "api/submit", {
+      form_id: current ? current.id : null,
+      answers: current ? local[current.id].answers : {},
+      memo: current ? local[current.id].memo : "",
+      edits,
+    });
+    for (const id of Object.keys(edits)) openedDetails.delete(id);
+    setSaveStatus("送信しました");
+    await refresh();
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  } catch (e) {
+    if (e.data && e.data.questions) {
+      e.data.questions.forEach((k) => { errors[k] = "差し戻しの内容を書いてください"; });
+      renderAll();
+    }
+    alert("送信できませんでした: " + e.message);
+  } finally {
+    submitting = false;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) document.title = "ask-via-form";
+});
+
+poll();
+</script>
+</body>
+</html>
