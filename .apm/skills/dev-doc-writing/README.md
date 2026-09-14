@@ -28,7 +28,7 @@ AI に開発文書を書かせると、材料のない箇所まで流暢に埋�
 
 ## 依存
 
-- 聞き取りに `ask-via-form` スキルを使う。一緒に入れる。
+- 聞き取りに `ask-via-form` スキルを使う。一緒に入れる。動作の要件（Python 3.9 以上、ブラウザなど）は `ask-via-form` の README を参照。
 
   ```bash
   apm install murooka/agent-skills --skill dev-doc-writing --skill ask-via-form
