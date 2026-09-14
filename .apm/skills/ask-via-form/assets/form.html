@@ -279,7 +279,13 @@ function syncLocal(form) {
     local[form.id] = { answers: JSON.parse(JSON.stringify(src.answers || {})), memo: src.memo || "" };
   }
   const entry = local[form.id];
-  for (const q of form.questions) entry.answers[q.id] = normalizeAnswer(q, entry.answers[q.id]);
+  for (const q of form.questions) {
+    // 描画済みの入力欄やボタンは回答オブジェクトを直接書き換えるので、差し替えずにその場で正規化する。
+    // 差し替えると、次に描画し直すまでの操作が local に届かない
+    const current = entry.answers[q.id];
+    if (current) Object.assign(current, normalizeAnswer(q, current));
+    else entry.answers[q.id] = normalizeAnswer(q, current);
+  }
 }
 
 // ------------------------------------------------------------ 描画
