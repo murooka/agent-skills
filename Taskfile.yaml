@@ -1,0 +1,43 @@
+version: '3'
+
+vars:
+  CURRENT_VERSION:
+    sh: "sed -n 's/^version: *//p' apm.yml"
+
+tasks:
+  default:
+    desc: タスクの一覧を表示する
+    cmds:
+      - task --list
+
+  release:
+    desc: apm.yml の version を上げてコミットし、タグを付けて origin に push する(BUMP=patch|minor|major、既定は patch)
+    vars:
+      BUMP: '{{.BUMP | default "patch"}}'
+      NEXT_VERSION:
+        sh: |
+          echo '{{.CURRENT_VERSION}}' | awk -F. -v bump='{{.BUMP}}' '
+            NF != 3 { exit }
+            bump == "major" { printf "%d.0.0\n", $1 + 1 }
+            bump == "minor" { printf "%d.%d.0\n", $1, $2 + 1 }
+            bump == "patch" { printf "%d.%d.%d\n", $1, $2, $3 + 1 }'
+    preconditions:
+      - sh: echo '{{.CURRENT_VERSION}}' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+        msg: "apm.yml の version を X.Y.Z として読めない(読めた値: {{.CURRENT_VERSION}})"
+      - sh: test -n '{{.NEXT_VERSION}}'
+        msg: "BUMP は patch / minor / major のいずれかにする(指定: {{.BUMP}})"
+      - sh: test "$(git branch --show-current)" = main
+        msg: "main ブランチで実行する"
+      - sh: git diff --quiet && git diff --cached --quiet
+        msg: "コミットしていない変更がある。コミットしてから release する"
+      - sh: git fetch -q origin main && git merge-base --is-ancestor origin/main HEAD
+        msg: "origin/main に手元にないコミットがある。取り込んでから release する"
+      - sh: '! git rev-parse -q --verify refs/tags/v{{.NEXT_VERSION}} >/dev/null'
+        msg: "タグ v{{.NEXT_VERSION}} はすでにある"
+    cmds:
+      - echo 'v{{.CURRENT_VERSION}} → v{{.NEXT_VERSION}}'
+      - "sed -i.bak 's/^version: .*/version: {{.NEXT_VERSION}}/' apm.yml && rm apm.yml.bak"
+      - git add apm.yml
+      - git commit -q -m 'v{{.NEXT_VERSION}} に版上げ'
+      - git tag v{{.NEXT_VERSION}}
+      - git push origin main --tags
