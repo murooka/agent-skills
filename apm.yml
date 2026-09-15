@@ -1,5 +1,5 @@
 name: agent-skills
-version: 0.8.1
+version: 0.8.2
 description: Personal agent skills, distributed via APM for reuse across projects
 author: murooka
 license: MIT
