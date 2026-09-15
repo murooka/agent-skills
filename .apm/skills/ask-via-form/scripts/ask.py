@@ -927,6 +927,13 @@ def cmd_history(args):
     return 0
 
 
+def cmd_forms(args):
+    d = session_dir(args.session)
+    st = read_state(d)
+    print(json.dumps([entry["definition"] for entry in st["forms"]], ensure_ascii=False, indent=2))
+    return 0
+
+
 def main():
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(AttributeError):
@@ -956,6 +963,10 @@ def main():
     p = sub.add_parser("history", help="これまでの送信をすべて出し直す")
     p.add_argument("--session", required=True)
     p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("forms", help="これまでに出したフォーム定義をすべて出し直す")
+    p.add_argument("--session", required=True)
+    p.set_defaults(func=cmd_forms)
 
     p = sub.add_parser("_serve", help=argparse.SUPPRESS)
     p.add_argument("session")
