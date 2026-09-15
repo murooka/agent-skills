@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """日本語テキストの添削を Gemini (agy CLI) に投げ、結果を id で対応づけて返す。
 
-添削対象は agy のプロンプトに直接載せる。agy はヘッドレスではファイル読み取りが
-自動拒否されるため、Gemini にパスを渡しても読めない。ファイルの読み書きは呼び出し側の
-仕事で、このスクリプトは「テキストを渡して添削文を受け取る」だけを行う。
+添削する原文は、agy のプロンプトに直接載せる。原文の周りの文脈(コメントが指す関数、
+カラムの定義など)は、--context-dir で指定したディレクトリの中に限って Gemini に読ませられる。
+agy は -p ではカレントディレクトリをワークスペースとして扱わず、--add-dir で加えた
+ディレクトリの中だけ読み取りを自動で許可する。書き込みとディレクトリの外の読み取りは拒否される。
 
 usage:
   python3 proofread.py --input items.json [--output result.json]
+                       [--context-dir DIR ...]
                        [--model gemini-3.8-flash-medium] [--timeout 180s]
                        [--batch-size 5] [--max-chars 12000] [--attempts 3] [--workers 3]
 
 items.json は項目の配列:
   [{"id": "任意の識別子", "kind": "コードコメント(Go, 1 行)", "text": "原文",
-    "hint": "任意。周辺の文脈や守ってほしい制約"}]
+    "hint": "任意。周辺の文脈や守ってほしい制約",
+    "path": "任意。原文のあるファイルの絶対パス(--context-dir の中)",
+    "line": "任意。原文のある行(例: 42、42-45)",
+    "refs": ["任意。原文が指すコードやスキーマのファイルの絶対パス(--context-dir の中)"]}]
 """
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -36,6 +42,14 @@ INSTRUCTION = """あなたは日本語の技術文書の校正者です。以下
 - 原文の意味が読み取れず添削できない項目は、revised に原文をそのまま入れ、note の先頭に「判断できない:」と書いて理由を続ける。推測で補わない。
 
 出力は項目ごとに id / revised / note。id は与えられたものを一字一句そのまま返す。note は「何をなぜ変えたか」の日本語一文（変えていないなら「変更なし」）。
+"""
+
+CONTEXT_INSTRUCTION = """
+周辺の文脈について:
+- 「場所」や「参考」が書かれた項目は、添削の前に、そのファイルを読んで原文の周り（コメントが指す関数や型、カラムの定義、同じ文書の前後の節）を確かめる。ファイルを読むツールには、書かれている絶対パスをそのまま渡す。
+- 読むのは、原文の意味を正しく取るためだけ。周りで知った情報（原文に書かれていない条件、理由、値）を revised に足さない。
+- 書き直すのは原文だけ。周りの文章やコードは直さない。ファイルの変更やコマンドの実行はしない。
+- 周りを読んで、原文の内容そのものが実装や定義と食い違っていると気づいたら、revised では意味を変えずに添削し、note の先頭に「食い違い:」と書いて、何が食い違っているかを続ける。
 """
 
 SCHEMA = {
@@ -63,10 +77,17 @@ END = "----- 原文ここまで -----"
 
 def build_prompt(items):
     blocks = [INSTRUCTION]
+    if any(item.get("path") or item.get("refs") for item in items):
+        blocks.append(CONTEXT_INSTRUCTION)
     for item in items:
         block = [f"\n### id: {item['id']}", f"種別: {item.get('kind', '指定なし')}"]
         if item.get("hint"):
             block.append(f"補足: {item['hint']}")
+        if item.get("path"):
+            line = f"（{item['line']} 行目）" if item.get("line") else ""
+            block.append(f"場所: {item['path']}{line}")
+        for ref in item.get("refs") or []:
+            block.append(f"参考: {ref}")
         block += [BEGIN, item["text"], END]
         blocks.append("\n".join(block))
     return "\n".join(blocks)
@@ -115,12 +136,14 @@ def extract_items(payload):
     return None
 
 
-def call_once(prompt, model, timeout):
+def call_once(prompt, model, timeout, context_dirs):
     cmd = [
         "agy", "--model", model, "--print-timeout", timeout,
         "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
-        "-p", prompt,
     ]
+    for directory in context_dirs:
+        cmd += ["--add-dir", directory]
+    cmd += ["-p", prompt]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"agy が異常終了した (exit {proc.returncode}): "
@@ -136,14 +159,14 @@ def call_once(prompt, model, timeout):
     if items is None:
         raise RuntimeError("添削結果の JSON が応答に含まれていない。応答冒頭: "
                            f"{str(payload.get('response'))[:200]!r}")
-    return items, payload.get("duration_seconds", 0.0)
+    return items, payload.get("duration_seconds", 0.0), payload.get("denied_actions") or []
 
 
-def call_agy(prompt, model, timeout, attempts, label):
+def call_agy(prompt, model, timeout, context_dirs, attempts, label):
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            return call_once(prompt, model, timeout)
+            return call_once(prompt, model, timeout, context_dirs)
         except RuntimeError as error:
             last_error = error
             if attempt < attempts:
@@ -151,10 +174,53 @@ def call_agy(prompt, model, timeout, attempts, label):
     raise last_error
 
 
+def resolve_context_dirs(raw_dirs):
+    """--context-dir を実在する絶対パスに揃える。
+
+    ディレクトリの中は .gitignore の対象も含めて Gemini に読まれうるので、
+    ホームディレクトリやルートのような広すぎる指定は受け付けない。
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    dirs = []
+    for raw in raw_dirs:
+        directory = os.path.realpath(raw)
+        if not os.path.isdir(directory):
+            sys.exit(f"--context-dir が見つからない: {raw}")
+        if directory in (home, os.path.sep):
+            sys.exit(f"--context-dir が広すぎる: {raw}。原文と参考のファイルを含む、なるべく狭いディレクトリを指定する。")
+        dirs.append(directory)
+    return dirs
+
+
+def resolve_item_paths(item, context_dirs):
+    """path と refs を実在する絶対パスに揃え、--context-dir の中にあることを確かめる。"""
+    for key in ("path", "refs"):
+        if key not in item:
+            continue
+        values = item[key] if key == "refs" else [item[key]]
+        if key == "refs" and not isinstance(values, list):
+            sys.exit(f"id={item['id']} の refs は絶対パスの配列にする")
+        resolved = []
+        for value in values:
+            if not isinstance(value, str) or not os.path.isabs(value):
+                sys.exit(f"id={item['id']} の {key} は絶対パスにする: {value!r}")
+            path = os.path.realpath(value)
+            if not os.path.isfile(path):
+                sys.exit(f"id={item['id']} の {key} が見つからない: {value}")
+            if not context_dirs:
+                sys.exit(f"id={item['id']} に {key} があるのに --context-dir がない。読ませるディレクトリを指定する。")
+            if not any(os.path.commonpath([path, d]) == d for d in context_dirs):
+                sys.exit(f"id={item['id']} の {key} が --context-dir の外にある: {value}")
+            resolved.append(path)
+        item[key] = resolved if key == "refs" else resolved[0]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, help="項目の配列を収めた JSON ファイル")
     parser.add_argument("--output", help="結果 JSON の書き出し先")
+    parser.add_argument("--context-dir", action="append", default=[],
+                        help="Gemini に読ませてよいディレクトリ(繰り返し指定可)。項目の path と refs はこの中に置く")
     parser.add_argument("--model", default="gemini-3.8-flash-medium")
     parser.add_argument("--timeout", default="180s", help="agy 1 回あたりの応答待ち上限")
     parser.add_argument("--batch-size", type=int, default=5, help="1 回の呼び出しに載せる項目数の上限")
@@ -173,10 +239,12 @@ def main():
     ids = [str(item["id"]) for item in items]
     if len(set(ids)) != len(ids):
         sys.exit("id が重複している。対応づけができないため中断する。")
+    context_dirs = resolve_context_dirs(args.context_dir)
     for item in items:
         item["id"] = str(item["id"])
         if not str(item.get("text", "")).strip():
             sys.exit(f"id={item['id']} の text が空")
+        resolve_item_paths(item, context_dirs)
 
     started = time.time()
     groups = chunk(items, args.batch_size, args.max_chars)
@@ -185,18 +253,20 @@ def main():
         index, group = indexed
         label = f"塊 {index + 1}/{len(groups)}"
         try:
-            returned, seconds = call_agy(build_prompt(group), args.model, args.timeout,
-                                         args.attempts, label)
-            return group, returned, seconds, None
+            returned, seconds, denied = call_agy(build_prompt(group), args.model, args.timeout,
+                                                 context_dirs, args.attempts, label)
+            return group, returned, seconds, denied, None
         except RuntimeError as error:
-            return group, [], 0.0, str(error)
+            return group, [], 0.0, [], str(error)
 
     with ThreadPoolExecutor(max_workers=max(1, min(args.workers, len(groups)))) as pool:
         outcomes = list(pool.map(run, enumerate(groups)))
 
-    revisions, failures, gemini_seconds = {}, [], 0.0
-    for group, returned, seconds, error in outcomes:
+    revisions, failures, denied_actions, gemini_seconds = {}, [], [], 0.0
+    for group, returned, seconds, denied, error in outcomes:
         gemini_seconds += seconds
+        if denied:
+            denied_actions.append({"ids": [i["id"] for i in group], "denied": denied})
         if error:
             failures.append({"ids": [i["id"] for i in group], "error": error})
         for entry in returned:
@@ -218,6 +288,7 @@ def main():
             "note": note,
             "changed": revised != item["text"],
             "undecidable": note.startswith("判断できない"),
+            "mismatch": note.startswith("食い違い"),
         })
 
     report = {
@@ -225,10 +296,12 @@ def main():
         "elapsed_seconds": round(time.time() - started, 1),
         "gemini_seconds": round(gemini_seconds, 1),
         "batches": len(groups),
+        "context_dirs": context_dirs,
         "results": results,
         "missing_ids": missing,
         "unexpected_ids": sorted(revisions),
         "failures": failures,
+        "denied_actions": denied_actions,
     }
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
@@ -241,12 +314,17 @@ def main():
         print(f"\n## id: {r['id']}" + ("" if r["changed"] else "  [変更なし]"))
         if r["undecidable"]:
             print("!! Gemini が意味を読み取れなかった項目")
+        if r["mismatch"]:
+            print("!! Gemini が、原文の内容と実装や定義の食い違いを指摘した項目")
         print(f"原文: {r['original']}")
         if r["changed"]:
             print(f"添削: {r['revised']}")
         print(f"理由: {r['note']}")
     for failure in failures:
         print(f"\n!! 添削できなかった id: {', '.join(failure['ids'])}\n   {failure['error']}")
+    for entry in denied_actions:
+        names = ", ".join(sorted({d.get("display_name") or d.get("action", "?") for d in entry["denied"]}))
+        print(f"\n!! agy が拒否した操作があった id: {', '.join(entry['ids'])} ({names})")
     if missing:
         print(f"\n!! 返ってこなかった id: {', '.join(missing)}")
     if report["unexpected_ids"]:
