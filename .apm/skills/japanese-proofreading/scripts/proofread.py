@@ -50,7 +50,7 @@ CONTEXT_INSTRUCTION = """
 - 「場所」や「参考」が書かれた項目は、添削の前に、そのファイルを読んで原文の周り（コメントが指す関数や型、カラムの定義、同じ文書の前後の節）を確かめる。ファイルを読むツールには、書かれている絶対パスをそのまま渡す。
 - 読むのは、原文の意味を正しく取るためだけ。周りで知った情報（原文に書かれていない条件、理由、値）を revised に足さない。
 - 書き直すのは原文だけ。周りの文章やコードは直さない。ファイルの変更やコマンドの実行はしない。
-- 周りを読んで、原文の内容そのものが実装や定義と食い違っていると気づいたら、revised では意味を変えずに添削し、note の先頭に「食い違い:」と書いて、何が食い違っているかを続ける。
+- 周りを読んで、原文の内容そのものが実装や定義と食い違っていると気づいたら、revised では意味を変えずに添削し、note の 1 行目に「食い違い:」と書いて何が食い違っているかを続け、改行してから、いつもどおり何をなぜ変えたかを 1 文で書く。1 行目に変更理由を混ぜない。
 """
 
 SCHEMA = {
@@ -137,6 +137,23 @@ def extract_items(payload):
     return None
 
 
+def diagnose(payload, stderr):
+    """失敗の原因を切り分けるための材料を、エラー文の先頭に付ける。
+
+    agy はツールの権限を拒否すると応答全体を空にして返すため、症状(JSON が無い)だけでは
+    構造化出力の欠落と区別がつかない。拒否された操作と agy の案内を、失敗時にこそ出す。
+    """
+    notes = []
+    denied = payload.get("denied_actions") or []
+    if denied:
+        names = ", ".join(sorted({d.get("display_name") or d.get("action", "?") for d in denied}))
+        notes.append(f"拒否された操作: {names}(--context-dir の外を読もうとした可能性がある)")
+    hint = next((line for line in (stderr or "").splitlines() if line.strip()), "")
+    if hint:
+        notes.append(f"agy の案内: {hint.strip()[:200]}")
+    return "。".join(notes) + "。" if notes else ""
+
+
 def call_once(prompt, model, timeout, context_dirs):
     cmd = [
         "agy", "--model", model, "--print-timeout", timeout,
@@ -158,7 +175,7 @@ def call_once(prompt, model, timeout, context_dirs):
                            f"{str(payload.get('response'))[:300]}")
     items = extract_items(payload)
     if items is None:
-        raise RuntimeError("添削結果の JSON が応答に含まれていない。応答冒頭: "
+        raise RuntimeError(diagnose(payload, proc.stderr) + "添削結果の JSON が応答に含まれていない。応答冒頭: "
                            f"{str(payload.get('response'))[:200]!r}")
     return items, payload.get("duration_seconds", 0.0), payload.get("denied_actions") or []
 
