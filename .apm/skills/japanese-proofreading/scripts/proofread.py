@@ -20,8 +20,10 @@ items.json は項目の配列:
     "refs": ["任意。原文が指すコードやスキーマのファイルの絶対パス(--context-dir の中)"]}]
 """
 import argparse
+import collections
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,9 +39,14 @@ INSTRUCTION = """あなたは日本語の技術文書の校正者です。以下
 3. 一文の圧縮。助詞が落ちて名詞が数珠つなぎになっている、一文に条件と動作と例外を詰め込んでいる、読点がなく係り受けが読み取れない。ほどいて分ける。
 
 守ること:
-- 意味を変えない。原文に無い情報を足さず、原文にある情報を落とさない。語尾や語の重複を足さない。
+- 原文にある情報を落とさない。語尾や語の重複を足さない。
 - 原文の主張は変えない。主張とは、断定の強さ（「〜する場合がある」と「〜する」）、条件・限定・例外の範囲、因果や条件の有無、誰が何をするか、語が指すものを指す。
-- 識別子・型名・関数名・カラム名・数値・単位・製品名・コード断片は原文の表記のまま残す。半角文字を全角に変えない。
+- 読み手の理解を助ける補足は足してよい。ただし足してよいのは次の 2 つだけである。
+  (1) 原文が指しているものの、その分野での一般的な呼び名（「ログイン試行回数の上限」に「レートリミット」を添えるなど）
+  (2) 「場所」や「参考」のファイルを読んで確かめた事実（列の値、定数名、型など）
+  推測で書けることは足さない。確かめていない数値・単位・日付・URL・識別子を持ち込まない。
+- 補ったときは、note の最後に「補った: <足したもの>（根拠: 一般的な呼び名、または読んだファイルの名前）」の行を入れる。何も足していないなら書かない。
+- 識別子・型名・関数名・カラム名・数値・単位・製品名・コード断片は、原文にあるものを原文の表記のまま残す。半角文字を全角に変えない。
 - 各項目の「種別」が示す形式と長さに収める。コメント記号や Markdown 記法など、原文の書式は保つ。
 - 文体（である調 / ですます調、体言止めの有無）は原文に合わせる。原文が混在していないかぎり、混ぜない。
 - revised には、その項目の全文を返す。長いからといって一部だけを返したり、省略記号で省いたりしない。長い項目ほど、後半まで同じ密度で見る。
@@ -63,7 +70,7 @@ ORIGIN = {
 CONTEXT_INSTRUCTION = """
 周辺の文脈について:
 - 「場所」や「参考」が書かれた項目は、添削の前に、そのファイルを読んで原文の周り（コメントが指す関数や型、カラムの定義、同じ文書の前後の節）を確かめる。ファイルを読むツールには、書かれている絶対パスをそのまま渡す。
-- 読むのは、原文の意味を正しく取るためだけ。周りで知った情報（原文に書かれていない条件、理由、値）を revised に足さない。
+- 周りを読んで確かめた事実は、読み手の理解を助けるなら revised に補ってよい（「利用停止中」に `status: suspended` を添えるなど）。補ったときは note の最後に「補った:」の行を入れる。確かめていないことは足さない。
 - 書き直すのは原文だけ。周りの文章やコードは直さない。ファイルの変更やコマンドの実行はしない。
 - 周りを読んで、原文の内容そのものが実装や定義と食い違っていると気づいたら、revised では意味を変えずに添削し、note の 1 行目に「食い違い:」と書いて何が食い違っているかを続け、改行してから、いつもどおり何をなぜ変えたかを 1 文で書く。1 行目に変更理由を混ぜない。
 """
@@ -86,6 +93,21 @@ SCHEMA = {
     },
     "required": ["items"],
 }
+
+# インラインコードと数値。添削で増えた分は補足、減った分は事実の欠落の候補になる。
+TOKEN = re.compile(r"`[^`\n]+`|(?<![\w`])\d+(?:[.,]\d+)*")
+
+
+def token_diff(original, revised):
+    """原文と添削文で、インラインコードと数値の集合を比べる。
+
+    補足を許しているので、足されたものを書き手が 1 件ずつ確かめられるように拾う。
+    Gemini の「補った:」の申告は漏れることがあるため、申告とは別に数える。
+    """
+    before = collections.Counter(TOKEN.findall(original))
+    after = collections.Counter(TOKEN.findall(revised))
+    return sorted((after - before).elements()), sorted((before - after).elements())
+
 
 BEGIN = "----- 原文ここから -----"
 END = "----- 原文ここまで -----"
@@ -315,6 +337,7 @@ def main():
             continue
         revised = entry.get("revised", "")
         note = entry.get("note", "")
+        added_tokens, removed_tokens = token_diff(item["text"], revised)
         results.append({
             "id": item["id"],
             "kind": item.get("kind", ""),
@@ -324,6 +347,9 @@ def main():
             "changed": revised != item["text"],
             "undecidable": note.startswith("判断できない"),
             "mismatch": note.startswith("食い違い"),
+            "supplemented": "補った:" in note,
+            "added_tokens": added_tokens,
+            "removed_tokens": removed_tokens,
         })
 
     report = {
@@ -351,6 +377,12 @@ def main():
             print("!! Gemini が意味を読み取れなかった項目")
         if r["mismatch"]:
             print("!! Gemini が、原文の内容と実装や定義の食い違いを指摘した項目")
+        if r["supplemented"]:
+            print("!! 原文に無い補足が足された項目（note の「補った:」の根拠を確かめる）")
+        if r["added_tokens"]:
+            print(f"!! 原文に無い記号・数値が増えた: {', '.join(r['added_tokens'])}")
+        if r["removed_tokens"]:
+            print(f"!! 原文にあった記号・数値が消えた: {', '.join(r['removed_tokens'])}")
         print(f"原文: {r['original']}")
         if r["changed"]:
             print(f"添削: {r['revised']}")
