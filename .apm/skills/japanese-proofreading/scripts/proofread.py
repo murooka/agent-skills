@@ -8,7 +8,7 @@ agy は -p ではカレントディレクトリをワークスペースとして
 
 usage:
   python3 proofread.py --input items.json [--output result.json]
-                       [--context-dir DIR ...]
+                       [--context-dir DIR ...] [--origin ai|human|mixed]
                        [--model gemini-3.8-flash-medium] [--timeout 180s]
                        [--batch-size 5] [--max-chars 12000] [--attempts 3] [--workers 3]
 
@@ -28,22 +28,37 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-INSTRUCTION = """あなたは日本語の技術文書の校正者です。以下の各項目を、人間が読んで一度で理解できる自然な日本語へ添削してください。
+INSTRUCTION = """あなたは日本語の技術文書の校正者です。以下の各項目を、その分野の読み手が一度で理解できる自然な日本語へ推敲してください。
 
-原文はエンジニアが手早く書いた日本語で、情報を詰め込むあまり圧縮されている場合が多い。助詞が落ちて名詞が数珠つなぎになっている、一文に条件と動作と例外を詰め込んでいる、読点がなく係り受けが読み取れない、といった箇所を、意味を変えずにほどくのが仕事です。
+直すのは次の 3 つです。当てはまる箇所は、意味が変わらない範囲で書き換えてください。
+
+1. 語の選び方。その分野で定着している言葉を避けて言い換えたもの（「バージョン」を「版」、「ツール」を「道具」、「レイヤー」を「層」と書くなど）、直訳調の言い回し、硬すぎる漢語、意味の広すぎる語。読み手がその分野で普通に使う語に直す。
+2. 文章の構成。否定や前置きから入って主旨が後ろに回っている、話の順序が追いにくい、同じことを繰り返している。主旨が先に来る順に並べ替える。
+3. 一文の圧縮。助詞が落ちて名詞が数珠つなぎになっている、一文に条件と動作と例外を詰め込んでいる、読点がなく係り受けが読み取れない。ほどいて分ける。
 
 守ること:
 - 意味を変えない。原文に無い情報を足さず、原文にある情報を落とさない。語尾や語の重複を足さない。
-- 語彙と文体を自然な日本語に選び直すのは、あなたの仕事である。ただし原文の主張は変えない。主張とは、断定の強さ（「〜する場合がある」と「〜する」）、条件・限定・例外の範囲、因果や条件の有無、誰が何をするか、語が指すものを指す。
+- 原文の主張は変えない。主張とは、断定の強さ（「〜する場合がある」と「〜する」）、条件・限定・例外の範囲、因果や条件の有無、誰が何をするか、語が指すものを指す。
 - 識別子・型名・関数名・カラム名・数値・単位・製品名・コード断片は原文の表記のまま残す。半角文字を全角に変えない。
 - 各項目の「種別」が示す形式と長さに収める。コメント記号や Markdown 記法など、原文の書式は保つ。
 - 文体（である調 / ですます調、体言止めの有無）は原文に合わせる。原文が混在していないかぎり、混ぜない。
-- revised には、その項目の全文を返す。長いからといって一部だけを返したり、省略記号で省いたりしない。
-- 直す必要が本当にない項目だけ、revised に原文をそのまま入れる。一方で、読みにくい箇所があるのに「変更なし」で済ませない。
+- revised には、その項目の全文を返す。長いからといって一部だけを返したり、省略記号で省いたりしない。長い項目ほど、後半まで同じ密度で見る。
+- 直すところが無いかは、語・文・段落の 3 つの単位で確かめる。3 つとも無い項目だけ、revised に原文をそのまま入れる。読みにくい箇所や不自然な語があるのに「変更なし」で済ませない。
 - 原文の意味が読み取れず添削できない項目は、revised に原文をそのまま入れ、note の先頭に「判断できない:」と書いて理由を続ける。推測で補わない。
 
 出力は項目ごとに id / revised / note。id は与えられたものを一字一句そのまま返す。note は「何をなぜ変えたか」の日本語一文（変えていないなら「変更なし」）。
 """
+
+ORIGIN = {
+    "ai": """
+原文について: これは AI が自動生成した文章です。意味は通っていることが多い一方で、その分野で使う言葉を避けた言い換え（「バージョン」を「版」と書くなど）、否定や前置きから入る構成、同じ言い回しの繰り返しが残りやすい。語の選び方と文章の構成を重点的に見てください。
+""",
+    "human": """
+原文について: これはエンジニアが手早く書いた文章です。情報を詰め込むあまり圧縮されている場合が多く、助詞の落ちた名詞の数珠つなぎや、条件と動作と例外を詰め込んだ一文が残りやすい。一文の圧縮をほどくことを重点的に見てください。
+""",
+    "mixed": "",
+}
+
 
 CONTEXT_INSTRUCTION = """
 周辺の文脈について:
@@ -76,8 +91,8 @@ BEGIN = "----- 原文ここから -----"
 END = "----- 原文ここまで -----"
 
 
-def build_prompt(items):
-    blocks = [INSTRUCTION]
+def build_prompt(items, origin="mixed"):
+    blocks = [INSTRUCTION + ORIGIN[origin]]
     if any(item.get("path") or item.get("refs") for item in items):
         blocks.append(CONTEXT_INSTRUCTION)
     for item in items:
@@ -94,7 +109,7 @@ def build_prompt(items):
     return "\n".join(blocks)
 
 
-def chunk(items, batch_size, max_chars):
+def chunk(items, batch_size, max_chars, origin="mixed"):
     """項目を、件数と文字数の両方の上限に収まる塊へ分ける。
 
     1 回の呼び出しに全部を載せると、構造化出力が落ちたときに全件が巻き添えになる。
@@ -104,7 +119,7 @@ def chunk(items, batch_size, max_chars):
     for item in items:
         trial = current + [item]
         too_many = len(trial) > batch_size
-        too_long = len(build_prompt(trial)) > max_chars
+        too_long = len(build_prompt(trial, origin)) > max_chars
         if current and (too_many or too_long):
             chunks.append(current)
             current = [item]
@@ -239,6 +254,8 @@ def main():
     parser.add_argument("--output", help="結果 JSON の書き出し先")
     parser.add_argument("--context-dir", action="append", default=[],
                         help="Gemini に読ませてよいディレクトリ(繰り返し指定可)。項目の path と refs はこの中に置く")
+    parser.add_argument("--origin", choices=["ai", "human", "mixed"], default="mixed",
+                        help="原文の出自。ai=エージェントや LLM が生成した文章、human=人が手早く書いた文章")
     parser.add_argument("--model", default="gemini-3.8-flash-medium")
     parser.add_argument("--timeout", default="180s", help="agy 1 回あたりの応答待ち上限")
     parser.add_argument("--batch-size", type=int, default=5, help="1 回の呼び出しに載せる項目数の上限")
@@ -265,13 +282,13 @@ def main():
         resolve_item_paths(item, context_dirs)
 
     started = time.time()
-    groups = chunk(items, args.batch_size, args.max_chars)
+    groups = chunk(items, args.batch_size, args.max_chars, args.origin)
 
     def run(indexed):
         index, group = indexed
         label = f"塊 {index + 1}/{len(groups)}"
         try:
-            returned, seconds, denied = call_agy(build_prompt(group), args.model, args.timeout,
+            returned, seconds, denied = call_agy(build_prompt(group, args.origin), args.model, args.timeout,
                                                  context_dirs, args.attempts, label)
             return group, returned, seconds, denied, None
         except RuntimeError as error:
