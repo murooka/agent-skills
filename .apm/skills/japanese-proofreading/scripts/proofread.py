@@ -9,11 +9,13 @@ agy は -p ではカレントディレクトリをワークスペースとして
 usage:
   python3 proofread.py --input items.json [--output result.json]
                        [--context-dir DIR ...] [--origin ai|human|mixed]
+                       [--preserve sentences|headings|conclusion|facts]
                        [--model gemini-3.8-flash-medium] [--timeout 180s]
                        [--batch-size 5] [--max-chars 12000] [--attempts 3] [--workers 3]
 
 items.json は項目の配列:
   [{"id": "任意の識別子", "kind": "コードコメント(Go, 1 行)", "text": "原文",
+    "preserve": "任意。この項目だけ別の不変条件にするとき",
     "hint": "任意。周辺の文脈や守ってほしい制約",
     "path": "任意。原文のあるファイルの絶対パス(--context-dir の中)",
     "line": "任意。原文のある行(例: 42、42-45)",
@@ -32,26 +34,49 @@ from concurrent.futures import ThreadPoolExecutor
 
 INSTRUCTION = """あなたは日本語の技術文書の校正者です。以下の各項目を、その分野の読み手が一度で理解できる自然な日本語へ推敲してください。
 
-直すのは次の 3 つです。当てはまる箇所は、意味が変わらない範囲で書き換えてください。
+単語の選び方と文章の構成におかしいところがあります。読みやすくなるように直してください。どこまで書き換えてよいかは、項目ごとに「不変条件」で指定します。
 
-1. 語の選び方。その分野で定着している言葉を避けて言い換えたもの（「バージョン」を「版」、「ツール」を「道具」、「レイヤー」を「層」と書くなど）、直訳調の言い回し、硬すぎる漢語、意味の広すぎる語。読み手がその分野で普通に使う語に直す。
-2. 文章の構成。否定や前置きから入って主旨が後ろに回っている、話の順序が追いにくい、同じことを繰り返している。主旨が先に来る順に並べ替える。
-3. 一文の圧縮。助詞が落ちて名詞が数珠つなぎになっている、一文に条件と動作と例外を詰め込んでいる、読点がなく係り受けが読み取れない。ほどいて分ける。
-
-守ること:
-- **事実と違うことを書かない。禁止はこれだけである。** 言い方を変える、順序を組み替える、言葉を足す、重複を削る、限定を言い直す — どれもしてよい。原文と違う内容になってもかまわない。問題になるのは、その文書が扱っている対象について、事実でないことを書いた場合だけである。
-- 確かめられることは確かめる。「場所」や「参考」のファイルがあるなら読み、そこに書かれていることと食い違わないようにする。
-- 確かめていないことを断定しない。数値・単位・日付・URL・識別子・型名・関数名・カラム名は、原文にあるものをそのまま使い、読んで確かめていないものを新しく持ち込まない。半角文字を全角に変えない。
-- 原文が伝えている事実は落とさない。重複や冗長な言い回しは削ってよい。
-- 原文に無いことを足したときは、note の最後に「補った: <足したもの>（根拠: 読んだファイルの名前、または一般に知られている事実）」の行を入れる。何も足していないなら書かない。
-- 各項目の「種別」が示す形式と長さに収める。コメント記号や Markdown 記法など、原文の書式は保つ。
-- 文体（である調 / ですます調、体言止めの有無）は原文に合わせる。原文が混在していないかぎり、混ぜない。
+どの項目でも守ること:
+- 事実と違うことを書かない。確かめていないことを断定しない。
+- 数値・単位・日付・URL・識別子・型名・関数名・カラム名は、原文にあるものをそのまま使い、読んで確かめていないものを新しく持ち込まない。半角文字を全角に変えない。
+- 文体（である調 / ですます調）は原文に合わせる。「種別」に指定があれば、そちらに従う。
+- 「種別」が示す形式（行数、長さ、コメント記号、Markdown の書式）に収める。
 - revised には、その項目の全文を返す。長いからといって一部だけを返したり、省略記号で省いたりしない。長い項目ほど、後半まで同じ密度で見る。
-- 直すところが無いかは、語・文・段落の 3 つの単位で確かめる。3 つとも無い項目だけ、revised に原文をそのまま入れる。読みにくい箇所や不自然な語があるのに「変更なし」で済ませない。
-- 原文の意味が読み取れず添削できない項目は、revised に原文をそのまま入れ、note の先頭に「判断できない:」と書いて理由を続ける。推測で補わない。
+- 原文に無いことを足したときは、note の最後に「補った: <足したもの>（根拠: 読んだファイルの名前、または一般に知られている事実）」の行を入れる。
+- 原文の意味が読み取れず推敲できない項目は、revised に原文をそのまま入れ、note の先頭に「判断できない:」と書いて理由を続ける。推測で補わない。
 
 出力は項目ごとに id / revised / note。id は与えられたものを一字一句そのまま返す。note は「何をなぜ変えたか」の日本語一文（変えていないなら「変更なし」）。
 """
+
+# 不変条件。どこまで書き換えてよいかの目盛りで、strict から loose へ並ぶ。
+# 凍結だけを並べると、書かれていない範囲まで保守的に扱われるので、解放も必ず対で書く。
+PRESERVE = {
+    "sentences": """
+不変条件（この実行の全項目に適用）:
+- 保つもの: 文の並びと切り方、段落の構成、見出し、主張、事実。
+- 変えてよいもの: 語の選び方、接続詞、助詞、読点の位置。
+- 文を分けたり、つないだり、順序を入れ替えたりしない。語と接続の選び直しだけで読みやすくする。
+""",
+    "headings": """
+不変条件（この実行の全項目に適用）:
+- 保つもの: 見出しの文言とその並び、各節が扱っている主張、事実。見出しの無い項目では、段落ごとの主題とその並びを保つ。
+- 変えてよいもの: 節の中の段落構成、文の切り方と順序、語の選び方、接続詞、言い足しと言い換え。
+- 上に挙げた以外に制限はない。読みやすくなるなら、節の中は自由に組み替えてよい。
+""",
+    "conclusion": """
+不変条件（この実行の全項目に適用）:
+- 保つもの: 最終的な主張（この文章が読み手に納得させたい結論）と、事実。
+- 変えてよいもの: 見出し、節の並び、論点の順序と取捨、段落構成、文の切り方、語の選び方。
+- 結論に至る道筋は、読み手が納得しやすい順に組み替えてよい。上に挙げた以外に制限はない。
+""",
+    "facts": """
+不変条件（この実行の全項目に適用）:
+- 保つもの: 事実だけ。
+- 変えてよいもの: 何を書くか、どこまで書くか、順序、構成、文、語。書く必要のない内容は削ってよく、足りない説明は足してよい。
+- 上に挙げた以外に制限はない。
+""",
+}
+PRESERVE_LEVELS = list(PRESERVE)
 
 ORIGIN = {
     "ai": """
@@ -106,12 +131,55 @@ def token_diff(original, revised):
     return sorted((after - before).elements()), sorted((before - after).elements())
 
 
+def headings_of(text):
+    return [l.strip() for l in text.split("\n") if re.match(r"^#{1,6} ", l)]
+
+
+def blocks_of(text):
+    """空行で区切られた塊を数える。コードブロックは中身を畳んで 1 つと数える。"""
+    out, buf, fence = [], [], False
+    for line in text.split("\n"):
+        if line.startswith("```"):
+            fence = not fence
+            buf.append(line)
+            continue
+        if not fence and not line.strip():
+            if buf:
+                out.append("\n".join(buf))
+                buf = []
+            continue
+        buf.append(line)
+    if buf:
+        out.append("\n".join(buf))
+    return out
+
+
+def check_invariant(original, revised, level):
+    """不変条件のうち、機械で決まるものだけを照合する。
+
+    緩い段階(conclusion, facts)は、保つものが主張と事実なので機械では決まらない。
+    書き手が読んで確かめる(SKILL.md の手順 4)。
+    """
+    violations = []
+    if level not in ("sentences", "headings"):
+        return violations
+    before, after = headings_of(original), headings_of(revised)
+    if before != after:
+        violations.append(f"見出しが変わった: {before} → {after}")
+    if level == "sentences":
+        if len(blocks_of(original)) != len(blocks_of(revised)):
+            violations.append(f"段落の数が変わった: {len(blocks_of(original))} → {len(blocks_of(revised))}")
+        if original.count("。") != revised.count("。"):
+            violations.append(f"文の数が変わった: {original.count('。')} → {revised.count('。')}")
+    return violations
+
+
 BEGIN = "----- 原文ここから -----"
 END = "----- 原文ここまで -----"
 
 
-def build_prompt(items, origin="mixed"):
-    blocks = [INSTRUCTION + ORIGIN[origin]]
+def build_prompt(items, origin="mixed", preserve="headings"):
+    blocks = [INSTRUCTION + ORIGIN[origin] + PRESERVE[preserve]]
     if any(item.get("path") or item.get("refs") for item in items):
         blocks.append(CONTEXT_INSTRUCTION)
     for item in items:
@@ -128,22 +196,24 @@ def build_prompt(items, origin="mixed"):
     return "\n".join(blocks)
 
 
-def chunk(items, batch_size, max_chars, origin="mixed"):
+def chunk(items, batch_size, max_chars, origin="mixed", default_preserve="headings"):
     """項目を、件数と文字数の両方の上限に収まる塊へ分ける。
 
     1 回の呼び出しに全部を載せると、構造化出力が落ちたときに全件が巻き添えになる。
     塊を小さく保つと、失敗の影響範囲と再試行のコストがその塊だけに閉じる。
     """
-    chunks, current = [], []
+    chunks, current, level = [], [], None
     for item in items:
+        item_level = item.get("preserve") or default_preserve
         trial = current + [item]
         too_many = len(trial) > batch_size
-        too_long = len(build_prompt(trial, origin)) > max_chars
-        if current and (too_many or too_long):
+        too_long = len(build_prompt(trial, origin, item_level)) > max_chars
+        if current and (too_many or too_long or item_level != level):
             chunks.append(current)
             current = [item]
         else:
             current = trial
+        level = item_level
     if current:
         chunks.append(current)
     return chunks
@@ -275,6 +345,9 @@ def main():
                         help="Gemini に読ませてよいディレクトリ(繰り返し指定可)。項目の path と refs はこの中に置く")
     parser.add_argument("--origin", choices=["ai", "human", "mixed"], default="mixed",
                         help="原文の出自。ai=エージェントや LLM が生成した文章、human=人が手早く書いた文章")
+    parser.add_argument("--preserve", choices=PRESERVE_LEVELS, default="headings",
+                        help="どこまで書き換えてよいか。sentences=語と接続詞だけ / headings=節の中は自由(既定) / "
+                             "conclusion=論の組み立ても自由 / facts=内容の取捨も自由。項目ごとの preserve が優先する")
     parser.add_argument("--model", default="gemini-3.8-flash-medium")
     parser.add_argument("--timeout", default="180s", help="agy 1 回あたりの応答待ち上限")
     parser.add_argument("--batch-size", type=int, default=5, help="1 回の呼び出しに載せる項目数の上限")
@@ -298,17 +371,20 @@ def main():
         item["id"] = str(item["id"])
         if not str(item.get("text", "")).strip():
             sys.exit(f"id={item['id']} の text が空")
+        if item.get("preserve") and item["preserve"] not in PRESERVE:
+            sys.exit(f"id={item['id']} の preserve は {'/'.join(PRESERVE_LEVELS)} のいずれかにする: {item['preserve']}")
         resolve_item_paths(item, context_dirs)
 
     started = time.time()
-    groups = chunk(items, args.batch_size, args.max_chars, args.origin)
+    groups = chunk(items, args.batch_size, args.max_chars, args.origin, args.preserve)
 
     def run(indexed):
         index, group = indexed
         label = f"塊 {index + 1}/{len(groups)}"
         try:
-            returned, seconds, denied = call_agy(build_prompt(group, args.origin), args.model, args.timeout,
-                                                 context_dirs, args.attempts, label)
+            level = group[0].get("preserve") or args.preserve
+            returned, seconds, denied = call_agy(build_prompt(group, args.origin, level), args.model,
+                                                 args.timeout, context_dirs, args.attempts, label)
             return group, returned, seconds, denied, None
         except RuntimeError as error:
             return group, [], 0.0, [], str(error)
@@ -335,8 +411,11 @@ def main():
         revised = entry.get("revised", "")
         note = entry.get("note", "")
         added_tokens, removed_tokens = token_diff(item["text"], revised)
+        level = item.get("preserve") or args.preserve
         results.append({
             "id": item["id"],
+            "preserve": level,
+            "invariant_violations": check_invariant(item["text"], revised, level),
             "kind": item.get("kind", ""),
             "original": item["text"],
             "revised": revised,
@@ -351,6 +430,8 @@ def main():
 
     report = {
         "model": args.model,
+        "origin": args.origin,
+        "preserve": args.preserve,
         "elapsed_seconds": round(time.time() - started, 1),
         "gemini_seconds": round(gemini_seconds, 1),
         "batches": len(groups),
@@ -369,11 +450,13 @@ def main():
     print(f"# 添削結果 ({args.model}, {len(groups)} 回の呼び出し, {report['elapsed_seconds']}s) — "
           f"{len(items)} 件中 {len(results)} 件が返り、うち {changed} 件に変更あり")
     for r in results:
-        print(f"\n## id: {r['id']}" + ("" if r["changed"] else "  [変更なし]"))
+        print(f"\n## id: {r['id']}  [{r['preserve']}]" + ("" if r["changed"] else "  [変更なし]"))
         if r["undecidable"]:
             print("!! Gemini が意味を読み取れなかった項目")
         if r["mismatch"]:
             print("!! Gemini が、原文の内容と実装や定義の食い違いを指摘した項目")
+        for v in r["invariant_violations"]:
+            print(f"!! 不変条件({r['preserve']})に反した: {v}")
         if r["supplemented"]:
             print("!! 原文に無い補足が足された項目（note の「補った:」の根拠を確かめる）")
         if r["added_tokens"]:
