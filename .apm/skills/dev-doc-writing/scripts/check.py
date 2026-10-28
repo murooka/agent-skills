@@ -17,16 +17,31 @@ PREFIXES = r"UC|FR|TR|UF|FS|EC|AC|G|NFR|OQ"
 
 
 def sections_of_norm(path):
-    """セクション規範の表の 1 列目から、置くべき見出しを順に取り出す。"""
-    rows = []
+    """セクション規範から、置くべき見出しと、任意のセクションを取り出す。
+
+    1 列目の見出しが「セクション」の表をセクションの表とみなし、最初のものを必須、
+    2 つ目以降を任意として扱う。ほかの表(並びや境界の表)は見ない。
+    """
+    tables, current, in_table = [], None, False
     for line in open(path, encoding="utf-8"):
-        if not line.startswith("|") or line.startswith("|---") or "| ---" in line:
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.split("|")[1:-1]]
+            if not in_table:
+                in_table = True
+                current = [] if cells and cells[0] == "セクション" else None
+                continue
+            if current is not None and cells and not cells[0].startswith("---"):
+                current.append(cells[0])
             continue
-        cell = line.split("|")[1].strip()
-        if cell and cell not in ("セクション", "文書", "下流の項目", "上流のセクション", "中身", "語", "判定", "並び"):
-            rows.append(cell)
-    # 表が複数あるファイルでも、最初の表(セクションの表)だけを使う
-    return rows
+        if in_table:
+            if current:
+                tables.append(current)
+            in_table, current = False, None
+    if in_table and current:
+        tables.append(current)
+    required = tables[0] if tables else []
+    optional = [s for tbl in tables[1:] for s in tbl]
+    return required, optional
 
 
 def headings_of(text):
@@ -54,10 +69,10 @@ def main():
 
     # 1. 見出しの欠けと順序
     if args.norm:
-        want = sections_of_norm(args.norm)
+        want, optional = sections_of_norm(args.norm)
         have = headings_of(text)
         missing = [s for s in want if s not in have]
-        extra = [s for s in have if s not in want]
+        extra = [s for s in have if s not in want and s not in optional]
         if missing:
             problems.append(f"見出しが足りない: {', '.join(missing)}")
         if extra:
