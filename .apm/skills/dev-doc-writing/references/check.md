@@ -72,6 +72,8 @@ python3 <この SKILL.md と同じディレクトリ>/scripts/check.py \
   - （外部の事実）Google の ID トークンの `hd` クレームは、Workspace のドメインを表す。https://developers.google.com/identity/openid-connect/openid-connect （2026-09-15 参照）
   ```
 
+- **ユーザーの依頼の原文**（チャットでの依頼文）。背景や課題は、フォームの答えではなく依頼文から写していることが多く、
+  渡さないと、縮めて意味が変わっていても照合できない
 - 改訂のときは、今回の変更の差分
 - チェック項目と、このファイルの「出さない指摘」「出力形式」
 
