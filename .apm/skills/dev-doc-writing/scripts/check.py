@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """開発文書の、機械で決まるところだけを確かめる。
 
-セクションの見出し、要求 ID、該当なし、未決定事項、上流への参照は、読まなくても決まる。
+セクションの見出し、要求 ID、未決定事項、上流への参照、文字数は、読まなくても決まる。
 ここをコマンド 1 本で済ませ、サブエージェントには読まないと決まらないことだけを任せる。
 
 usage:
@@ -13,7 +13,7 @@ import os
 import re
 import sys
 
-PREFIXES = r"UC|FR|TR|UF|FS|EC|AC|G|NFR|OQ"
+PREFIXES = r"UC|FR|TR|UF|FS|EC|CS|AC|D|G|NFR|OQ"
 
 
 def sections_of_norm(path):
@@ -42,6 +42,12 @@ def sections_of_norm(path):
     required = tables[0] if tables else []
     optional = [s for tbl in tables[1:] for s in tbl]
     return required, optional
+
+
+def budget_of_norm(path):
+    """セクション規範の「文字数の目安」を取り出す。無ければ None。"""
+    m = re.search(r"文字数の目安[:：]\s*([\d,]+)", open(path, encoding="utf-8").read())
+    return int(m.group(1).replace(",", "")) if m else None
 
 
 def headings_of(text):
@@ -80,6 +86,10 @@ def main():
         order = [s for s in have if s in want]
         if order != [s for s in want if s in have]:
             problems.append(f"見出しの順序が規範と違う: {' → '.join(order)}")
+        budget = budget_of_norm(args.norm)
+        if budget and len(text) > budget:
+            notes.append(f"文字数が目安を超えている: {len(text)} 字(目安 {budget} 字)。"
+                         "削るか、文書を分ける")
 
     # 2. 要求 ID の重複
     for prefix, nums in sorted(ids_in(text).items()):
@@ -91,19 +101,12 @@ def main():
             notes.append(f"{prefix} の欠番: {', '.join(f'{prefix}-{n}' for n in gaps)}"
                          "(改訂で消したなら正しい。新規作成なら振り直す)")
 
-    # 3. 該当なしに理由が続いているか
-    for i, line in enumerate(lines):
-        if "該当なし" in line:
-            body = line.split("該当なし", 1)[1].lstrip("：: ")
-            if not body.strip() and not (i + 1 < len(lines) and lines[i + 1].strip()):
-                problems.append(f"{args.file}:{i+1} 該当なしに理由がない")
-
-    # 4. 未決定を示す語が、未決定事項に紐づいているか
+    # 3. 未決定を示す語が、未決定事項に紐づいているか
     for i, line in enumerate(lines):
         if re.search(r"未定|検討中|TBD", line) and not re.search(r"OQ-\d+", line):
             problems.append(f"{args.file}:{i+1} 未定/検討中/TBD があるのに OQ の参照がない: {line.strip()[:60]}")
 
-    # 5. 上流への参照が実在するか
+    # 4. 上流への参照が実在するか
     refs = re.findall(r"`([^`]+\.md)#(?:user-content-)?([a-zA-Z]{1,3}-\d+)`", text)
     refs += [(p, i) for p, i in re.findall(r"\(([^)]+\.md)#(?:user-content-)?([a-zA-Z]{1,3}-\d+)\)", text)]
     upstream = {}
